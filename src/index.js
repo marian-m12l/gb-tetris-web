@@ -65,6 +65,8 @@ class OnlineTetris extends React.Component {
   StateStartingGame = "StartingGame";
   StateJoinGame = "SelectJoinGame";
   StateInGame = "InGame";
+  StateTest = "Test";
+  StatePrinter = "Printer";
 
   constructor(props) {
     super(props);
@@ -82,6 +84,204 @@ class OnlineTetris extends React.Component {
     }
   }
 
+  outgoingTestByteStream = [ "ff", "ee", "dd", "cc", "bb", "aa", "99", "88", "77", "66", "55", "44", "33", "22", "11", "00" ];
+  expectedTestByteStream = [ "00", "11", "22", "33", "44", "55", "66", "77", "88", "99", "aa", "bb", "cc", "dd", "ee", "ff" ];
+  handleTestClick() {
+    this.serial = new Serial();
+    this.setState({
+      state: this.StateConnecting
+    });
+    this.serial.getDevice().then(() => {
+      console.log("Usb connected, updating status.");
+      this.setState({
+        state: this.StateTest
+        
+      });
+
+      console.log("["+0+"]Pushing 0x"+this.outgoingTestByteStream[0]+" into FIFO...");
+      this.serial.sendHex(this.outgoingTestByteStream[0]);
+      this.test(0);
+    }).catch(c => {
+      console.log("CATTTCH");
+      this.setState({
+        state: this.StateConnect
+      });
+    });
+  }
+
+  test(testIndex) {
+    // Push 1 byte to FIFO, Read one byte, ... rinse, repeat
+    console.log("Waiting for incoming data...");
+    this.serial.readHex(1).then(result => {
+      console.log("RECV: " + result);
+      if (result === this.expectedTestByteStream[testIndex]) {
+        console.log("OK, expected byte");
+        if (testIndex < this.outgoingTestByteStream.length - 1) {
+          let nextIndex = testIndex + 1;
+          console.log("["+nextIndex+"] Pushing 0x"+this.outgoingTestByteStream[nextIndex]+" into FIFO...");
+          this.serial.sendHex(this.outgoingTestByteStream[nextIndex]);
+          setTimeout(() => {
+            this.test(nextIndex);
+          }, 100);
+        } else {
+          console.log("YAY !!! ALL BYTES MATCHED EXPECTED STREAM !!!")
+        }
+      } else {
+        console.error("WRONG BYTE RECEIVED: " + result + " instead of " + this.expectedTestByteStream[testIndex]);
+      }
+    });
+  }
+
+  // GB Printer commands receiver. print commands and data.
+  handlePrinterClick() {
+    this.serial = new Serial();
+    this.setState({
+      state: this.StateConnecting
+    });
+    this.serial.getDevice().then(() => {
+      console.log("Usb connected, updating status.");
+      this.setState({
+        state: this.StatePrinter
+        
+      });
+
+
+      this.startPrinter();
+    }).catch(c => {
+      console.log("CATTTCH");
+      this.setState({
+        state: this.StateConnect
+      });
+    });
+  }
+
+  PrinterStateIdle = "Idle";
+  PrinterStateMagicByte1 = "MagicByte1";
+  PrinterStateMagicByte2 = "MagicByte2";
+  PrinterStateCommandByte = "CommandByte";
+  PrinterStateCompressionByte = "CompressionByte";
+  PrinterStateLengthByte1 = "LengthByte1";
+  PrinterStateLengthByte2 = "LengthByte2";
+  PrinterStateDataBytes = "DataBytes";
+  PrinterStateDataBytesDone = "DataBytesDone";
+  PrinterStateCrcByte1 = "CrcByte1";
+  PrinterStateCrcByte2 = "CrcByte2";
+  PrinterStateKeepaliveByte = "KeepaliveByte";
+  PrinterStateStatusByte = "StatusByte";
+
+  smPrinter = {
+    state: this.PrinterStateIdle,
+    commandCode: "",
+    dataLength: 0,
+    dataCounter: 0,
+    data: ""
+  };
+
+  resetPrinterState() {
+    console.log("[RESET] Printer state reset");
+    this.smPrinter = {
+      state: this.PrinterStateIdle,
+      commandCode: "",
+      dataLength: 0,
+      dataCounter: 0,
+      data: ""
+    };
+  }
+
+  startPrinter() {
+    console.log("[startup] Pushing 0x00 into FIFO...");
+    this.serial.sendHex("00");
+
+    this.printer();
+  }
+
+  printer() {
+    console.log("Waiting for incoming data...");
+    this.serial.readHex(1).then(result => {
+      console.log("RECV: " + result);
+
+      let nextByte = "00";
+      switch(this.smPrinter.state) {
+        case this.PrinterStateIdle:
+        case this.PrinterStateStatusByte:
+          if (result === "88") {
+            this.smPrinter.state = this.PrinterStateMagicByte1;
+          }
+          break;
+        case this.PrinterStateMagicByte1:
+          if (result === "33") {
+            this.smPrinter.state = this.PrinterStateMagicByte2;
+          } else this.resetPrinterState();
+          break;
+        case this.PrinterStateMagicByte2:
+          if (result === "01" || result === "02" || result === "04" || result === "0f") {
+            this.smPrinter.commandCode = result;
+            this.smPrinter.state = this.PrinterStateCommandByte;
+          } else this.resetPrinterState();
+          break;
+        case this.PrinterStateCommandByte:
+          if (result === "00" || result === "01") {
+            this.smPrinter.state = this.PrinterStateCompressionByte;
+          } else this.resetPrinterState();
+          break;
+        case this.PrinterStateCompressionByte:
+          this.smPrinter.dataLength = parseInt(result, 16);
+          this.smPrinter.state = this.PrinterStateLengthByte1;
+          break;
+        case this.PrinterStateLengthByte1:
+          this.smPrinter.dataLength = (parseInt(result, 16) << 8) | this.smPrinter.dataLength;
+          console.log("Length: " + this.smPrinter.dataLength)
+          if (this.smPrinter.dataLength > 0) {
+            console.log("Data bytes to receive: " + this.smPrinter.dataLength);
+            this.smPrinter.state = this.PrinterStateLengthByte2;
+          } else {
+            this.smPrinter.state = this.PrinterStateDataBytesDone;
+          }
+          break;
+        case this.PrinterStateLengthByte2:
+        case this.PrinterStateDataBytes:
+          this.smPrinter.data += result;
+          this.smPrinter.dataCounter++;
+          console.log("Data counter: " + this.smPrinter.dataCounter);
+          if (this.smPrinter.dataCounter === this.smPrinter.dataLength) {
+            console.log("Received all " + this.smPrinter.dataLength + " data bytes");
+            this.smPrinter.state = this.PrinterStateDataBytesDone;
+          } else {
+            this.smPrinter.state = this.PrinterStateDataBytes;
+          }
+          break;
+        case this.PrinterStateDataBytesDone:
+          this.smPrinter.state = this.PrinterStateCrcByte1;
+          break;
+        case this.PrinterStateCrcByte1:
+          this.smPrinter.state = this.PrinterStateCrcByte2;
+          // Write 0x81 for keepalive
+          nextByte = "81";
+          break;
+        case this.PrinterStateCrcByte2:
+          this.smPrinter.state = this.PrinterStateKeepaliveByte;
+          // TODO Write status (0x00 ???, 0x04 printing done, 0x06 printing , 0x08 ready to receive data)
+          nextByte = "00";
+          break;
+        case this.PrinterStateKeepaliveByte:
+          console.log("COMMAND RECEIVED: code=" + this.smPrinter.commandCode + " data=" + this.smPrinter.dataCounter + " bytes")
+          // Get ready to receive next command packet
+          this.smPrinter.state = this.PrinterStateStatusByte;
+          this.smPrinter.commandCode = "";
+          this.smPrinter.dataLength = 0;
+          this.smPrinter.dataCounter = 0;
+          this.smPrinter.data = "";
+          break;
+      }
+
+      console.log("[printer] Pushing 0x"+nextByte+" into FIFO...");
+      this.serial.sendHex(nextByte);
+      setTimeout(() => {
+        this.printer();
+      }, 10); // TODO timeout 0 ?
+    });
+  }
+
   handleConnectClick() {
     this.serial = new Serial();
     this.setState({
@@ -94,7 +294,7 @@ class OnlineTetris extends React.Component {
         state: this.StateConnectingTetris
         
       });
-      this.attemptTetrisConnection();
+      this.waitForIncomingPackets();
     }).catch(c => {
       console.log("CATTTCH");
       this.setState({
@@ -186,23 +386,126 @@ class OnlineTetris extends React.Component {
     }, 100);
   }
 
-  attemptTetrisConnection() {
-    console.log("Attempt connection...");
-    this.serial.sendHex("29");
-    this.serial.readHex(64).then(result => {
-      if(result === "55") {
-        console.log("SUCCESS!\n");
+  waitForIncomingPackets() {
+    // Set byte to be sent when the primary sends its first byte
+    console.log("Pushing 0x55 into FIFO...");
+    this.serial.sendHex("55");
 
-        this.setState({
-          state: this.StateSelectMusic
-        });
-        this.startMusicTimer();
+    console.log("Waiting for incoming data...");
+    this.serial.readHex(64).then(result => {
+      console.log("RECV: " + result);
+      if(result === "29") {
+        console.log("SUCCESS!\n");
         
+        console.log("Pushing 0xAB into FIFO...");
+        this.serial.sendHex("AB");
+
+        this.waitForIncomingPacketsMusicSelection();
       } else {
         console.log("Fail");
         setTimeout(() => {
       
-          this.attemptTetrisConnection();
+          this.waitForIncomingPackets();
+        }, 100);
+      }
+    },
+    error => {
+      console.log("ERROR");
+      console.log(error);
+    });
+  }
+
+  waitForIncomingPacketsMusicSelection() {
+    console.log("Waiting for music selection...");
+    this.serial.readHex(64).then(result => {
+      console.log("RECV: " + result);
+      if (result === "1C") {
+        // Ignore music stuff
+        console.log("Music stuff...");
+        console.log("Pushing 0xBC into FIFO...");
+        this.serial.sendHex("BC");
+        setTimeout(() => {
+          this.waitForIncomingPacketsMusicSelection();
+        }, 100);
+      } else if(result === "50") {
+        console.log("SUCCESS MUSIC SELECTED!\n");
+        console.log("Pushing 0xCD into FIFO...");
+        this.serial.sendHex("CD");
+
+        this.waitForIncomingPacketsGameStart();
+      } else {
+        console.log("Fail");
+        console.log("Pushing 0xFF into FIFO...");
+        this.serial.sendHex("FF");
+        setTimeout(() => {
+      
+          this.waitForIncomingPacketsMusicSelection();
+        }, 100);
+      }
+    },
+    error => {
+      console.log("ERROR");
+      console.log(error);
+    });
+  }
+
+  waitForIncomingPacketsGameStart() {
+    console.log("Waiting for game start...");
+    this.serial.readHex(64).then(result => {
+      console.log("RECV: " + result);
+      if(result === "60") {
+        console.log("GAME START SEQUENCE!\n");
+        console.log("Pushing 0xDE into FIFO...");
+        this.serial.sendHex("DE");
+
+        this.waitForIncomingPacketsGameActions();
+
+      } else {
+        console.log("Fail");
+        console.log("Pushing 0xFF into FIFO...");
+        this.serial.sendHex("FF");
+        setTimeout(() => {
+      
+          this.waitForIncomingPacketsGameStart();
+        }, 100);
+      }
+    },
+    error => {
+      console.log("ERROR");
+      console.log(error);
+    });
+  }
+
+  waitForIncomingPacketsGameActions() {
+    console.log("Waiting for game start...");
+    
+    // TODO Buttons to trigger game veents from PLAYER: lines, lose  ???
+    // lines -> 0x80 - 0x85
+    // level -> valeur < 20
+    // lost -> 0xAA + 0xFF
+
+    // Then listen for game events from SERVER: lines, win
+    this.serial.readHex(64).then(result => {
+      console.log("RECV: " + result);
+      if(result === "02") {
+        console.log("FIXED LEVEL: " + result + "\n");
+        console.log("Pushing 0xF1 into FIFO...");
+        this.serial.sendHex("F1");
+      } else if (result === "0x80" || result === "0x81" || result === "0x82" || result === "0x83" || result === "0x84" || result === "0x85") {
+        console.log("RECEIVED LINES: " + result + "\n");
+        console.log("Pushing 0xF2 into FIFO...");
+        this.serial.sendHex("F2");
+      } else if(result === "43") {
+        console.log("FILL SCREEN AFTER LOSS\n");
+        console.log("Pushing 0xF1 into FIFO...");
+        this.serial.sendHex("F1");
+      } else {
+        console.log("Fail");
+        console.log("Pushing 0xFF into FIFO...");
+        this.serial.sendHex("FF");
+        setTimeout(() => {
+      
+          this.waitForIncomingPacketsGameActions();
         }, 100);
       }
     },
@@ -425,12 +728,12 @@ class OnlineTetris extends React.Component {
 
           <div className="connect">
             <img src={process.env.PUBLIC_URL + '/images/animation.gif'} className="gameboy" />
-            <h2 className="cover-heading">Tetrilink</h2>
-            <p className="lead">Connect your Game Boy, boot Tetris, and start playing with your friends!</p>
+            <h2 className="cover-heading">Tetrilink SECONDARY</h2>
+            <p className="lead">Connect your SECONDARY ADAPTER!</p>
             <hr />
-            <h4>Connect your Game Boy</h4>
-            <p>Connect your Game Boy with the USB to Game Link adapter and click "connect".</p>
             <button onClick={(e) => this.handleConnectClick()} className="btn btn-lg btn-secondary">Connect</button>
+            <button onClick={(e) => this.handleTestClick()} className="btn btn-lg btn-secondary">TEST</button>
+            <button onClick={(e) => this.handlePrinterClick()} className="btn btn-lg btn-secondary">START PRINTER</button>
             <br/>
             <small>Version: 0.2</small>
           </div>
@@ -512,6 +815,20 @@ class OnlineTetris extends React.Component {
             {/* <p>Unfortunately you need to reboot your Game Boy and refresh the page to try again.</p>
             <p>This is because stacksmashing is freaking lazy.</p> */}
             </div>)
+      } else if (this.state.state === this.StateTest) {
+        return (
+          <div className="connect">
+            <h2>TESTING secondary adapter...</h2>
+          </div>
+        )
+
+      } else if (this.state.state === this.StatePrinter) {
+        return (
+          <div className="connect">
+            <h2>PRINTING secondary adapter...</h2>
+          </div>
+        )
+
       } else {
         return (
           <div>Invalid state {this.state.state}</div>
