@@ -52,7 +52,7 @@ class GBLink {
             return new Promise((resolve) => resolve(4));    // Level 4
         } else {
             this.serial.bufSendHex("02", 10); // fixed level
-            var data = this.serial.read(64).then( result => {
+            return this.serial.read(64).then(result => {
                 var data = result.data.buffer;
                 if(data.length > 1) {
                     console.log("Data too long");
