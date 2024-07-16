@@ -15,7 +15,7 @@ class InGame extends React.Component {
                 <div className="container">
                     <div className="row justify-content-center">
                             {this.props.users.map((user, index) => (
-                                <Player key={`lobby-${user.name}`} user={user} />
+                                <Player key={`lobby-${user.uuid}`} user={user} current={user.uuid === this.props.uuid} />
                         ))}
                     </div>
                 </div>

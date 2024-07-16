@@ -92,7 +92,7 @@ body {
 }
 
 .cover-container {
-  max-width: 42em;
+  max-width: 62em;
 }
 
 
@@ -172,6 +172,9 @@ body {
   max-width: 75px;
   object-fit: contain;
 }
+.gameboy-current {
+  filter: saturate(1.5) brightness(2.5);
+}
 
 .username-input {
   background-color: rgb(65, 65, 65);
@@ -199,7 +202,8 @@ body {
 
 .custom-card {
   background-color: #444;
-  height: 220px;
+  height: 280px;
+  margin-bottom: 10px;
 }
 
 .card-options {

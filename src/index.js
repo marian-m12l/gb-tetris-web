@@ -7,7 +7,7 @@ import 'bootstrap/dist/js/bootstrap.js';
 import 'bootstrap/dist/js/bootstrap.bundle'
 import './index.css';
 
-import { Serial } from './serial.js';
+import { GBLink } from './gblink.js';
 import { GBWebsocket } from './gbwebsocket.js';
 import { Lobby } from './lobby.js';
 import { SelectGame } from './selectgame.js';
@@ -78,21 +78,17 @@ class OnlineTetris extends React.Component {
       level: 0,
       difficulty: 0,
       uuid: "",
-      admin: false
+      admin: false,
+      games: []
     }
+    this.gblink = new GBLink();
   }
 
   handleConnectClick() {
-    this.serial = new Serial();
-    this.setState({
-      state: this.StateConnecting
-    });
-    this.serial.getDevice().then(() => {
+    this.gblink.init().then(() => {
       console.log("Usb connected, updating status.");
       this.setState({
-        // status: this.StatusSelectMode
         state: this.StateConnectingTetris
-        
       });
       this.attemptTetrisConnection();
     }).catch(c => {
@@ -121,8 +117,7 @@ class OnlineTetris extends React.Component {
       console.log("Sending music")
       if(this.state.state === this.StateSelectMusic) {
         console.log("Music sent")
-        this.serial.sendHex(this.state.music);
-        this.serial.read(64);
+        this.gblink.sendMusic(this.state.music);
         this.startMusicTimer();
       } else {
         console.log("invalid state")
@@ -136,9 +131,7 @@ class OnlineTetris extends React.Component {
       console.log("Handicap timer");
       if(this.state.state === this.StateSelectHandicap) {
         console.log("Sending handicap");
-        // Just send a fake handicap
-        this.serial.sendHex("00");
-        var selectedDifficulty = this.serial.read(1)[0];
+        var selectedDifficulty = this.gblink.sendAndReadHandicap();
         console.log("Selected difficulty:");
         console.log(selectedDifficulty);
         this.setState({
@@ -153,17 +146,8 @@ class OnlineTetris extends React.Component {
 
   startGameTimer() {
     setTimeout(() => {
-      this.serial.bufSendHex("02", 10); // fixed level
-      var data = this.serial.read(64).then( result => {
-        var data = result.data.buffer;
-        if(data.length > 1) {
-          console.log("Data too long");
-          console.log(data.length);
-          // We ignore if we still have old data in the buffer.
-          this.startGameTimer();
-        } else {
-          
-          var value = (new Uint8Array(data))[0];
+      this.gblink.gameLoop().then(value => {
+        if (value !== null) {
           if(value < 20) {
             this.updateLevel(value);
           } else if((value >= 0x80) && (value <= 0x85)) { // lines sent
@@ -176,32 +160,27 @@ class OnlineTetris extends React.Component {
             });
             this.gb.sendDead();
           } else if(value === 0xFF) { //screen is filled after loss
-            this.serial.bufSendHex("43", 10);
+            this.gblink.sendLossScreen();
           }
           
         }
         this.startGameTimer();
-      });
-      
+      })
     }, 100);
   }
 
   attemptTetrisConnection() {
     console.log("Attempt connection...");
-    this.serial.sendHex("29");
-    this.serial.readHex(64).then(result => {
-      if(result === "55") {
+    this.gblink.attemptTetrisConnection().then(connected => {
+      if (connected) {
         console.log("SUCCESS!\n");
-
         this.setState({
           state: this.StateSelectMusic
         });
         this.startMusicTimer();
-        
       } else {
         console.log("Fail");
         setTimeout(() => {
-      
           this.attemptTetrisConnection();
         }, 100);
       }
@@ -213,51 +192,79 @@ class OnlineTetris extends React.Component {
   }
 
   handleMusicSelected() {
-    this.serial.sendHex("50");
-    this.serial.read(64);
+    this.gblink.sendMusicSelected();
     this.setState({
       state: this.StateSelectHandicap
     });
   }
 
-  handleHandicapSelected() {
-    this.serial.sendHex()
-  }
-
-  handleSendClick() {
-    this.serial.sendHex("29");
-    this.serial.readString();
-    this.timeoutFoo();
-  }
-
-  handleCreateGame(name, options) {
-    console.log("Create new game");
+  handleLobbyLoaded(name) {
+    // Open websocket connection and list games
+    console.log("Opening websocket");
     console.log(name);
     this.setState({
-      state: this.StateJoiningGame,
-      admin: true,
       name: name
     })
-    this.gb = GBWebsocket.initiateGame(name, options);
-    this.setGbCallbacks();
+    this.gb = GBWebsocket.connect(name);
+    // Callbacks
+    this.gb.onconnected = (gb) => {
+      // Connected. Poll games...
+      this.pollLobby.bind(this)();
+    }
+    this.gb.onuserinfo = this.gbUserInfo.bind(this);
+    this.gb.onlobbyinfoupdate = (gb) => {
+      //console.log("Lobby update");
+      //console.log(gb.games);
+      this.setState({
+        games: gb.games
+      })
+    }
   }
 
-  handleJoinGame(name, game_code) {
-    console.log("Join game");
+  pollLobby() {
+    console.log("Polling games...");
+    // Stop polling when leaving lobby screen
+    if (this.state.state === this.StateSelectHandicap) {
+      this.gb.sendListMessage();
+      setTimeout(
+        this.pollLobby.bind(this),
+        5000
+      );
+    }
+  }
+
+  handleRename(name) {
+    console.log("Rename player");
     console.log(name);
+    this.setState({
+      name: name
+    })
+    this.gb.sendRenameMessage(name);
+  }
+
+  handleCreateGame(options) {
+    console.log("Create new game");
+    console.log(options)
+    this.setState({
+      state: this.StateJoiningGame
+    })
+    this.setGbCallbacks();
+    this.gb.sendCreateMessage(options);
+  }
+
+  handleJoinGame(game_code) {
+    console.log("Join game");
     console.log(game_code);
     this.setState({
       state: this.StateJoiningGame,
-      admin: false,
-      name: name,
       game_code: game_code
     })
-    this.gb = GBWebsocket.joinGame(name, game_code);
     this.setGbCallbacks();
+    this.gb.sendJoinMessage(game_code);
   }
 
   setGbCallbacks() {
-    this.gb.onconnected = this.gbConnected.bind(this);
+    this.gb.ongamejoined = this.gbGameJoined.bind(this);
     this.gb.oninfoupdate = this.gbInfoUpdate.bind(this);
     this.gb.ongamestart = this.gbGameStart.bind(this);
     this.gb.ongameupdate = this.gbGameUpdate.bind(this);
@@ -298,7 +305,7 @@ class OnlineTetris extends React.Component {
     this.gb.sendStart();
   }
   
-  gbConnected(gb) {
+  gbGameJoined(gb) {
     console.log("We're connected!");
     console.log(gb.users)
     this.setState({
@@ -312,34 +319,8 @@ class OnlineTetris extends React.Component {
     console.log(this);
     console.log("Got game start.")
 
-    // step 1: start game message
-    this.serial.bufSendHex("60", 150);
-    // step 2: Send master indication
-    this.serial.bufSendHex("29", 4);
-
-    console.log("Sending unknown bytes");
-    // step 3: send 100 unknown bytes
-    for(var i=0; i < 100; i++) {
-      this.serial.bufSendHex("83", 4);
-    }
-
-    // step 4: send master again
-    this.serial.bufSendHex("29", 8);
-    console.log("Sending tiles");
-    // step 5: send tiles
-    for(var i=0; i < gb.tiles.length; i++) {
-      this.serial.bufSend(new Uint8Array([gb.tiles[i]]), 4);
-      // this.serial.read(64);
-      // sleep(3);
-    }
-
-    // step 6: and go
-    this.serial.bufSendHex("30", 70);
-    this.serial.bufSendHex("00", 70);
-    this.serial.bufSendHex("02", 70);
-    this.serial.bufSendHex("02", 70);
-    this.serial.bufSendHex("20", 70);
-
+    this.gblink.startGame(gb.tiles);
+    
     // Wait 3 seconds and then start game
     setTimeout(() => {
       this.setState({
@@ -370,25 +351,24 @@ class OnlineTetris extends React.Component {
     console.log("Got game update.")
     console.log(gb.users)
     console.log(gb.options)
+    console.log(gb.admin)
+    console.log(gb.admin === this.state.uuid)
     this.setState({
       game_code: gb.game_name,
       users: gb.users,
-      options: gb.options
+      options: gb.options,
+      admin: (gb.admin === this.state.uuid)
     });
   }
 
   gbLines(gb, lines) {
     console.log("lines");
-    this.serial.bufSend(new Uint8Array([lines]), 10);
+    this.gblink.sendLines(lines);
   }
 
   gbWin(gb) {
     console.log("WIN!");
-    this.serial.bufSendHex("AA", 50); // aa indicates BAR FULL
-    this.serial.bufSendHex("02", 50); // ffffinish
-    this.serial.bufSendHex("02", 50); // ffffinish
-    this.serial.bufSendHex("02", 50); // ffffinish
-    this.serial.bufSendHex("43", 50); // go to final screen. nice.
+    this.gblink.sendWin();
   }
 
   setMusic(music) {
@@ -419,7 +399,7 @@ class OnlineTetris extends React.Component {
   }
 
   render() {
-    if (navigator.usb) {
+    if (navigator.usb || this.gblink.mocking) {
       if (this.state.state === this.StateConnect) {
         return (
 
@@ -464,13 +444,12 @@ class OnlineTetris extends React.Component {
             <p>(Though obviously A is the best...)</p>
             <br/>
             <button onClick={(e) => this.handleMusicSelected()} className="btn btn-lg btn-secondary">Next</button>
-            {/* <button onClick={(e) => this.handleSendClick()} className="btn btn-lg btn-secondary">Send</button> */}
           </div>
         )
       } else if(this.state.state === this.StateSelectHandicap) {
         return (
           <div className="connect">
-            <SelectGame onCreateGame={(name, options) => this.handleCreateGame(name, options)} onJoinGame={(name, code) => this.handleJoinGame(name, code)} />
+            <SelectGame onLoaded={(name) => this.handleLobbyLoaded(name)} onCreateGame={(options) => this.handleCreateGame(options)} onJoinGame={(code) => this.handleJoinGame(code)} games={this.state.games} onNameChanged={(name) => this.handleRename(name)} />
           </div>)
       } else if(this.state.state === this.StateJoiningGame) {
         return(<div className="connect">
@@ -479,7 +458,7 @@ class OnlineTetris extends React.Component {
       } else if(this.state.state === this.StateLobby) {
         return(<div className="connect">
           {/* <h2>In lobby :)</h2> */}
-          <Lobby game_code={this.state.game_code} users={this.state.users} admin={this.state.admin} options={this.state.options} onStartGame={() => this.handleStartGame()} />
+          <Lobby game_code={this.state.game_code} users={this.state.users} uuid={this.state.uuid} admin={this.state.admin} options={this.state.options} onStartGame={() => this.handleStartGame()} />
         </div>)
       } else if(this.state.state === this.StateStartingGame) {
         return(<div className="connect">
@@ -489,7 +468,7 @@ class OnlineTetris extends React.Component {
       } else if(this.state.state === this.StateInGame) {
         return(<div className="connect">
 
-          <InGame game_code={this.state.game_code} users={this.state.users} admin={this.state.admin} />
+          <InGame game_code={this.state.game_code} users={this.state.users} uuid={this.state.uuid} admin={this.state.admin} />
         </div>)
         
       } else if(this.state.state === this.StateJoinGame) {

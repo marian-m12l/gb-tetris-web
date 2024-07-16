@@ -19,13 +19,30 @@ class GBWebsocket {
             this.onMessage(event);
         }).bind(this); // required to this points to GBWebsocket, not the websocket instance.
 
+        // Lobby events / callbacks
+
         this.onconnected = function(gb) {
             console.log("On connected not implemented");
+        }
+
+        this.onuserinfo = function(gb) {
+            console.log("User info not implemented!")
+        }
+
+        this.onlobbyinfoupdate = function(gb) {
+            console.log("On lobby info update not implemented");
+        }
+
+        // Game events / callbacks
+
+        this.ongamejoined = function(gb) {
+            console.log("On game joined not implemented");
         }
 
         this.oninfoupdate = function(gb) {
             console.log("On info update not implemented!");
         }
+
         this.ongamestart = function(gb) {
             console.log("On game start not implemented!");
         }
@@ -38,10 +55,6 @@ class GBWebsocket {
             console.log("Game end not implemented!");
         }
 
-        this.onuserinfo = function(gb) {
-            console.log("User info not implemented!")
-        }
-
         this.onlines = function(gb, lines) {
             console.log("Lines not implemented!")
         }
@@ -49,15 +62,18 @@ class GBWebsocket {
         this.onwin = function(gb) {
             console.log("Win not implemented!")
         }
-        console.log(this.ongameupdate);
 
-        this.admin = false;
+        // Lobby state
+        this.uuid = ""
         this.name = name;
+        this.games = [];
+
+        // Game state
         this.game_name = "YOU SHOULD NEVER SEE THIS"; // famous last words
         this.game_status = this.GAME_STATE_NONE;
         this.users = []
         this.options = {}
-        this.uuid = ""
+        this.admin = ""
         this.waitForConnection();
     }
 
@@ -65,6 +81,14 @@ class GBWebsocket {
         this.ws.send(JSON.stringify({
             "type": "register",
             "name": this.name
+        }));
+    }
+
+    sendRenameMessage(name) {
+        this.name = name;
+        this.ws.send(JSON.stringify({
+            "type": "rename",
+            "name": name
         }));
     }
 
@@ -80,9 +104,6 @@ class GBWebsocket {
             console.log("Connection ready")
             // Send register message and alert state
             this.sendRegisterMessage();
-            if (this.admin && this.options) {
-                this.sendOptionsMessage(this.options);
-            }
             this.onconnected(this);
         } else {
             setTimeout(
@@ -90,6 +111,29 @@ class GBWebsocket {
                 100
             );
         }
+    }
+
+    sendListMessage() {
+        this.ws.send(JSON.stringify({
+            "type": "list"
+        }));
+    }
+
+    sendCreateMessage(options) {
+        this.options = options;
+        this.ws.send(JSON.stringify({
+            "type": "create",
+            "options": options
+        }));
+        this.ongamejoined(this);
+    }
+
+    sendJoinMessage(game_code) {
+        this.ws.send(JSON.stringify({
+            "type": "join",
+            "game_code": game_code
+        }));
+        this.ongamejoined(this);
     }
 
     sendLines(lines) {
@@ -118,15 +162,10 @@ class GBWebsocket {
         }))
     }
 
-    static initiateGame(name, options) {
-        var gb = new GBWebsocket("wss://server.tetris.stacksmashing.net:5678/create", name);
-        gb.admin = true;
-        gb.options = options;
-        return gb;
-    }
-
-    static joinGame(name, code) {
-        return new GBWebsocket("wss://server.tetris.stacksmashing.net:5678/join/" + code, name)
+    static connect(name) {
+        let websocket_url = process.env.REACT_APP_WEBSOCKET_URL;
+        console.log(`Opening websocket: ${websocket_url}`)
+        return new GBWebsocket(websocket_url, name);
     }
 
     onMessage(event) {
@@ -137,12 +176,21 @@ class GBWebsocket {
         console.log(message);
 
         switch(message.type) {
+            case "lobby_info":
+                console.log("New lobby info");
+
+                this.games = message.games;
+
+                this.onlobbyinfoupdate(this);
+                break;
             case "game_info":
                 console.log("New game info");
                 this.game_name = message.name;
-                this.game_status = message.state;
+                this.game_status = message.status;
                 this.users = message.users;
                 this.options = message.options;
+                this.admin = message.admin;
+
                 this.oninfoupdate(this);
                 break;
             case "user_info":
